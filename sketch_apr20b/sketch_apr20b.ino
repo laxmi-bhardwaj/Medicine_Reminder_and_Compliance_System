@@ -1,8 +1,4 @@
-// =============================================================
-//  Medicine Reminder & Compliance System — ESP32
-//  Fixed Version — addresses all 7 reported issues
-// =============================================================
-//
+// Medicine Reminder & Compliance System — ESP32
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -38,30 +34,27 @@ DHT dht(DHTPIN, DHTTYPE);
 #define TEMP_MAX      35.0f
 #define HUM_MAX       60.0f
 
-// Water level: FIX [3][6] — ingestion confirmed when reading
-// DROPS by at least this many ADC counts from the previous sample.
-// (Picking up a glass lowers the sensor reading.)
-// Lowered to 20 for demo — tune upward for production noise rejection.
-#define WATER_DROP_THRESH   20   // tune to your sensor
+// Water level threshold for confirming ingestion from a sensor drop.
+// Picking up a glass lowers the reading, so a large drop is treated as a valid signal.
+#define WATER_DROP_THRESH   20
 
-// IR latch: when IR edge fires, hold the "seen" flag for this long (ms)
-// so that a water drop arriving in the next few ticks still counts.
+// Hold the IR detection state briefly so a matching water-drop event can still confirm ingestion.
 #define IR_LATCH_MS        2000UL
 
 // ─────────────────────────────────────────
 //  TIMING (ms)
 // ─────────────────────────────────────────
 #define BUTTON_DEBOUNCE_MS        300UL
-#define DOUBLE_PRESS_WINDOW_MS   2000UL   // FIX [4]: two presses within 1 s
-#define SCHEDULE_VIEW_MS         5000UL   // FIX [4]: show full schedule 5 s
+#define DOUBLE_PRESS_WINDOW_MS   2000UL
+#define SCHEDULE_VIEW_MS         5000UL
 #define INGESTION_COOLDOWN_MS    5000UL
 #define TAKEN_DISPLAY_MS         4000UL
 #define DHT_READ_INTERVAL_MS     2000UL
 #define DISPLAY_REFRESH_MS        200UL
 #define BUZZER_BEEP_PERIOD_MS     600UL
-#define EXPIRY_CHECK_INTERVAL_MS 10000UL  // 10 s demo; use 60000 for prod
+#define EXPIRY_CHECK_INTERVAL_MS 10000UL
 
-// FIX [6]: passive ingestion window ±30 simulated minutes
+// Passive ingestion window used to match a dose to a nearby schedule slot.
 #define PASSIVE_WINDOW_MIN        30
 
 // ─────────────────────────────────────────
@@ -123,7 +116,7 @@ enum AlertType {
   ALERT_EXPIRY = 3     // highest priority
 };
 
-// FIX [5]: pending med alert index while a higher-priority alert is active
+// Store a pending medication alert when a higher-priority alert is active.
 static int8_t  pendingMedIndex = -1;   // -1 = none
 
 struct AlertState {
@@ -138,10 +131,9 @@ AlertState currentAlert = {ALERT_NONE, 0, false, 0};
 // ─────────────────────────────────────────
 //  PER-MEDICINE ACKNOWLEDGEMENT FLAGS
 // ─────────────────────────────────────────
-// FIX [1]: expiry acknowledged per medicine — won't re-ring
 bool expiryAcknowledged[4] = {};
 
-// FIX [2]: env acknowledged until conditions normalise
+// Track whether the environment alert has been acknowledged until conditions recover.
 bool envAcknowledged = false;
 
 // ─────────────────────────────────────────
@@ -159,9 +151,9 @@ IngestionState ingestion = {false, 0, 0};
 //  SENSOR STATE
 // ─────────────────────────────────────────
 bool          prevIR         = HIGH;
-int           prevWaterRaw   = -1;     // FIX [3]: track numeric value for drop detection
-bool          irLatched      = false;  // FIX: IR latch so IR and water drop needn't
-unsigned long irLatchTime    = 0;      //      coincide in the same 200ms tick
+int           prevWaterRaw   = -1;
+bool          irLatched      = false;
+unsigned long irLatchTime    = 0;
 
 // ─────────────────────────────────────────
 //  SCHEDULE TRACKING
@@ -170,10 +162,10 @@ bool scheduleFired[4][4]    = {};   // alarm has fired this day
 bool scheduleLogged[4][4]   = {};   // ingestion was logged for this slot
 
 // ─────────────────────────────────────────
-//  DISPLAY STATE (FIX [4])
+//  DISPLAY STATE
 // ─────────────────────────────────────────
-unsigned long lastButtonPress      = 0xFFFFFFFF; // init far in the past — prevents
-unsigned long prevButtonPress      = 0xFFFFFFFF; // spurious double-press on boot
+unsigned long lastButtonPress      = 0xFFFFFFFF;
+unsigned long prevButtonPress      = 0xFFFFFFFF;
 unsigned long scheduleViewStart    = 0;
 bool          showingScheduleView  = false;
 
@@ -226,7 +218,7 @@ bool isExpired(const Medicine& m) {
   return (d > m.expiryDay);
 }
 
-// ── FIX [5]: raise alert respecting priority; park lower-priority med alerts
+// Raise an alert while respecting priority and parking lower-priority medication alerts.
 void raiseAlert(AlertType type, uint8_t medIdx = 0) {
   if (type == ALERT_MED) {
     if (currentAlert.type > ALERT_MED) {
@@ -259,7 +251,7 @@ void raiseAlert(AlertType type, uint8_t medIdx = 0) {
   }
 }
 
-// ── FIX [1][2][5]: clear alert and promote any pending med alert
+// Clear the current alert and promote a pending medication alert if needed.
 void clearAlert() {
   AlertType cleared = currentAlert.type;
   currentAlert.type         = ALERT_NONE;
@@ -290,8 +282,7 @@ void logIngestion(uint8_t medIdx, uint8_t slotIdx) {
 }
 
 // ─────────────────────────────────────────
-//  FIX [6]: find closest schedule slot within ±PASSIVE_WINDOW_MIN
-//  Returns slot index if found, -1 otherwise.
+//  Find the closest schedule slot within the passive confirmation window.
 // ─────────────────────────────────────────
 int8_t findNearbySlot(uint8_t medIdx, uint8_t curH, uint8_t curM) {
   int16_t curTotal = (int16_t)curH * 60 + curM;
@@ -360,7 +351,6 @@ void loop() {
   // ── 1. BUTTON ──────────────────────────────────────────────
   if (digitalRead(BUTTON) == LOW && (now - lastButtonPress > BUTTON_DEBOUNCE_MS)) {
 
-    // FIX [4]: double-press detection — only valid if prevButtonPress is real
     bool isDoublePress = (prevButtonPress != 0xFFFFFFFF) &&
                          (now - prevButtonPress < DOUBLE_PRESS_WINDOW_MS);
     prevButtonPress = lastButtonPress;
@@ -371,17 +361,13 @@ void loop() {
       AlertType t = currentAlert.type;
 
       if (t == ALERT_EXPIRY) {
-        // FIX [1]: mark this medicine's expiry as acknowledged
         expiryAcknowledged[currentAlert.medIndex] = true;
         Serial.printf("[ACK] Expiry ack for %s\n",
                       medicines[currentAlert.medIndex].name);
       } else if (t == ALERT_ENV) {
-        // FIX [2]: mark env as acknowledged until conditions normalise
         envAcknowledged = true;
         Serial.println("[ACK] Env alert acknowledged");
       } else if (t == ALERT_MED) {
-        // FIX [3]: button dismisses med alarm — NO ingestion log
-        // (scheduled slot stays "fired"; won't re-alarm same slot)
         Serial.println("[BUTTON] Med alarm dismissed — no log");
       }
 
@@ -390,7 +376,6 @@ void loop() {
     } else {
       // ── No active alarm ──────────────────────────────────
       if (isDoublePress) {
-        // FIX [4]: two presses → show full schedule for 5 s
         showingScheduleView = true;
         scheduleViewStart   = now;
         Serial.println("[UI] Schedule view triggered");
@@ -402,7 +387,6 @@ void loop() {
     }
   }
 
-  // FIX [4]: schedule view timeout
   if (showingScheduleView && (now - scheduleViewStart >= SCHEDULE_VIEW_MS)) {
     showingScheduleView = false;
   }
@@ -415,8 +399,6 @@ void loop() {
     if (!isnan(t)) currentTemp = t;
     if (!isnan(h)) currentHum  = h;
 
-    // FIX [2]: if env conditions normalise, reset acknowledgement
-    // so a future deterioration will alert again
     if (!isnan(currentTemp) && !isnan(currentHum)) {
       if (currentTemp <= TEMP_MAX && currentHum <= HUM_MAX) {
         if (envAcknowledged) {
@@ -431,7 +413,6 @@ void loop() {
   if (now - lastExpiryCheck >= EXPIRY_CHECK_INTERVAL_MS) {
     lastExpiryCheck = now;
     for (uint8_t i = 0; i < MEDICINE_COUNT; i++) {
-      // FIX [1]: skip if already acknowledged by user
       if (expiryAcknowledged[i]) continue;
       if (isExpired(medicines[i])) {
         raiseAlert(ALERT_EXPIRY, i);
@@ -444,7 +425,6 @@ void loop() {
     bool envBad = (currentTemp > TEMP_MAX || currentHum > HUM_MAX);
 
     if (envBad && !envAcknowledged && currentAlert.type < ALERT_ENV) {
-      // FIX [2]: only raise if not already acknowledged
       raiseAlert(ALERT_ENV);
     }
 
@@ -569,7 +549,7 @@ void loop() {
 }
 
 // ─────────────────────────────────────────
-//  HELPERS: NEXT ALARM STRING (FIX [4])
+//  HELPERS: NEXT ALARM STRING
 // ─────────────────────────────────────────
 // Returns the medicine index and slot of the next pending alarm.
 // Returns false if none found.
@@ -683,7 +663,7 @@ void updateDisplay(uint8_t h, uint8_t m, int waterRaw) {
     return;
   }
 
-  // ── FIX [4]: Full schedule view (double-press) ────────────
+  // ── Full schedule view (double-press) ────────────
   if (showingScheduleView) {
     display.setTextSize(1);
     display.setCursor(0, 0);
@@ -712,7 +692,7 @@ void updateDisplay(uint8_t h, uint8_t m, int waterRaw) {
     return;
   }
 
-  // ── FIX [4]: Idle — show next upcoming alarm only ─────────
+  // ── Idle view — show the next upcoming alarm ─────────
   display.setTextSize(1);
   display.setCursor(0, 0);
   display.printf("MedGuard  %02d:%02d", h, m);
